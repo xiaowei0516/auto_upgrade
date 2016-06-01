@@ -7,9 +7,13 @@ import psutil
 import shutil
 import time
 import urllib2
+import tarfile
+import hashlib
 
 post_url = 'http://192.168.10.22:8888/post_receive.php'
+
 tarurl = 'http://192.168.10.22:8888/upgrade.tar.gz'
+
 installdir = '/opt/iprobe'
 backup_dir = installdir + '-backup'
 
@@ -34,6 +38,34 @@ def post(url, post_data):
     PostData(url, jdata)
 	
 
+def extractTar(tarname):
+    if not tarfile.is_tarfile(tarname):
+        return False
+    tar = tarfile.open(tarname)
+    tar.extractall()
+    tar.close()
+    return True
+
+def get_file_md5(filename=''):
+    with open(filename, 'r') as f:
+        m = hashlib.md5()
+        while True:
+            data = f.read(10240)
+            if not data:
+                break
+            m.update(data)
+        return m.hexdigest()
+
+
+def md5_check(md5file="all.md5"):
+    with open(md5file,'r') as  fileHandle:
+        fileList = fileHandle.readlines()
+        for fileLine in fileList:
+            if ".md5" not in fileLine:
+                arr = fileLine.strip().split()
+                if arr[0] !=  get_file_md5(arr[1]):
+                    return  "False"
+        return "Ok"                    
 
 def GetNowTime():
     return time.strftime("%Y-%m-%d",time.localtime(time.time()))
@@ -51,7 +83,7 @@ def make_copy_dir(copydir='/opt/iprobe'):
 
 
 
-#backuping , copy file to -> targetDir
+#upgrade , increment add file
 def copyFiles(sourceDir,  targetDir):
     if sourceDir == targetDir:
         print "sourceDIR  and targetDIR not same!"
@@ -62,10 +94,8 @@ def copyFiles(sourceDir,  targetDir):
         if os.path.isfile(sourceFile):
             if not os.path.exists(targetDir):
                 os.makedirs(targetDir)
-            if not os.path.exists(targetFile) or(os.path.exists(targetFile)):
-                    open(targetFile, "wb").write(open(sourceFile, "rb").read())
+                open(targetFile, "wb").write(open(sourceFile, "rb").read())  #create or replace file
         if os.path.isdir(sourceFile):
-            First_Directory = False
             copyFiles(sourceFile, targetFile)
 
 
@@ -104,43 +134,6 @@ def  download_tar(url, tar_file_name):
     with open(tar_file_name ,"w")  as code:
         code.write(r.content)
 
-def find_md5_file(tar_filename):
-    md5file = "tar -tf " + tar_filename + " | sed -n  \' /.md5/p\' "
-    return Execute(md5file)
-
-
-
-def  check_tar(tar_filename, md5_filename):
-    untar_comm = 'tar -xvf ' + tar_filename
-    Execute(untar_comm)
-
-    untar_file_arr = tar_filename.split('.')
-    untar_file_name = untar_file_arr[0]
-    print untar_file_name
-
-    os.chdir(untar_file_name)
-    print os.getcwd()
-    md5_comm = 'md5sum -c --quiet ' + md5_filename
-    ismd5ok = Execute(md5_comm)
-    os.chdir('..')
-    print os.getcwd()
-    if "FAILED" in ismd5ok:
-        value = "FAILED"
-    else:
-        value = "OK"
-    return value
-
-
-def stop_monit_self():
-    osname = check_os()
-    if 'centos7' in osname  or 'CentOS7' in osname  or 'opensuse' in osname:
-        if os.path.exists('/usr/bin/sysemctl'):
-            Execute('systemctl stop monit.service')
-    if  'centos6' in osname  or  'CentOS6' in osname or 'ubuntu12'  in osname or 'ubuntu14' in osname or 'ubuntu8' in osname:
-        if os.path.exists('/sbin/initctl'):
-            Execute('initctl stop monit')
-
-
 
 def  start_process_all():
     osname = check_os()
@@ -153,15 +146,16 @@ def  start_process_all():
 
 
 def monit_stop_all():
-    monit_status_comm = installdir + '/monit -c ' + installdir + '/monitrc status | grep "Process"'
+    if os.name == "posix":  #Linux
+        monit_status_comm = installdir + '/monit -c ' + installdir + '/monitrc status | grep "Process"'
+    else:                  #Windows
+        monit_status_comm = installdir + '/monit -c ' + installdir + '/monitrc status | findstr "Process"'
     pro_state  = Execute(monit_status_comm)
-    print type(pro_state)
     arr_pro = pro_state.replace('Process',' ').replace('\n',' ').replace('\'', ' ').split()
     for i in range(len(arr_pro)):
-        print arr_pro[i]
-        stop_comm = installdir + '/monit -c ' + installdir + '/monitrc stop ' + arr_pro[i]
-        Execute(stop_comm)
-    stop_monit_self()
+        if "auto_upgarde" != arr_pro[i]:
+            stop_comm = installdir + '/monit -c ' + installdir + '/monitrc stop ' + arr_pro[i]
+            Execute(stop_comm)
     time.sleep(6)
 ##############################################
 def backup_err():
@@ -188,34 +182,34 @@ def upgrade_ok():
     sys.exit(0)
 
 
+
+
+
 if __name__ == '__main__':
     for  i  in range(3):
         #download tar  package
-#        get_tar_url()
         tar_file_name = 'upgrade.tar.gz'
         untar_file_arr = tar_file_name.split('.')
         untar_file_name = untar_file_arr[0]
+
         download_tar(tarurl, tar_file_name)
-        #check file not change in untar
-        try:
-            md5filename = find_md5_file(tar_file_name).strip()
-            print md5filename
-        except IOError, e:
-            continue
 
-        arr_path = md5filename.split('/')
-        md5file = arr_path[-1]
-        if md5file == "":
-            print "%s no exist" %md5file
+        #untar
+        extractTar(tar_file_name)
+
+        md5file = ''
+        for root, dirs, files in os.walk(untar_file_name):
+            for name in files:
+                if ".md5" in os.path.join(root, name):  # is or not   all.md5
+                    md5file = os.path.join(root,name)
+                    break
+
+        os.chdir(untar_file_name)
+        if md5_check(md5file) == "False":
             continue
+        os.chdir('..')
 		
-
-        isok = check_tar(tar_file_name, md5file)
-        if isok == "FAILED":
-            continue
-
         monit_stop_all()
-
 		#install dir backup
         try:
             fullcopy(installdir, backup_dir)
